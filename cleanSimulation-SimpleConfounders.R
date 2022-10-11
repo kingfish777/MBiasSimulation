@@ -3,10 +3,13 @@
 # first: install.packages("BiocManager")
 # then: 
 # BiocManager::install(c("tmle", "SuperLearner", "kableExtra", "tidyverse", "ggplot2", "earth", "ranger", "dagitty"), dependencies = TRUE, force = TRUE)
-#
+
 library(tmle) 
 library(SuperLearner)
+library(dbarts)
+library(DT)
 library(kableExtra)
+library(gtsummary)
 library(tidyverse)
 library(ggplot2)
 library(earth) 
@@ -14,6 +17,9 @@ library(ranger)
 library(dagitty)
 library(gt)
 library(simcausal)
+library(rcausal)
+library(cobalt)
+library(WeightIt)
 
 set.seed(7) # so results are reproducible
 
@@ -156,7 +162,6 @@ tmle1.MOR <- mean(Q1W_1) * (1 - mean(Q0W_1)) / ((1 - mean(Q1W_1)) * mean(Q0W_1))
 # Table to visualize the data
 psi <- Q1W_1 - Q0W_1
 
-library(DT)
 df <- round(cbind(Q1W_0, Q0W_0, gW, eps1=epsilon[1], eps2=epsilon[2], psi), digits = 4)
 renderDataTable({datatable(head(df, n = nrow(df)), options = list(pageLength = 5, digits = 3))})
 # Step 5 statistical inference (efficient influence curve)
@@ -197,8 +202,6 @@ varHat_AIPTW2 <- var(ICmor_aiptw) / n
 MORaiptw_CI <-c(AIPTW_MOR - 1.96*sqrt(varHat_AIPTW2), AIPTW_MOR +
                   1.96*sqrt(varHat_AIPTW2)); AIPTW_MOR; MORaiptw_CI
 # R-package tmle (base implementation includes SL.step, SL.glm and SL.glm.interaction)
-library(tmle)
-library(SuperLearner)
 TMLE2 <- tmle(Y = ObsData$Y, A = ObsData$A, W = ObsData[,c("W1", "W2", "W3", "W4")], family =
                 "binomial")
 #NOTE:
@@ -212,8 +215,6 @@ cat("\n ATEtmle2_bias:", abs(True_ATE - ATEtmle2))
 cat("\n ATEtmle2_Rel_bias:",abs(True_ATE - ATEtmle2) / True_ATE,"%")
 
 # R-package tmle with user-selected Super learner libraries
-library(tmle)
-library(SuperLearner)
 SL.library <- c("SL.glm","SL.step","SL.step.interaction", "SL.glm.interaction","SL.gam",
                 "SL.randomForest", "SL.rpart")
 TMLE3 <- tmle(Y = ObsData$Y,A = ObsData$A,W = ObsData [,c("W1", "W2", "W3", "W4")],
@@ -225,17 +226,13 @@ TMLE3$estimates$OR$CI
 cat("\n ATEtmle3_bias:", abs(True_ATE - ATEtmle3))
 cat("\n ATEtmle3_rel_bias:",abs(True_ATE - ATEtmle3) / True_ATE,"%")
 
-
-
-
 #More complex data-generating process
 #Readers interested in simulating more complex dependence structures among the covariates W1-W4 could
 #potentially use the R-package simcausal (Sofrygin O, van der Laan MJ, Neugebauer R (2015). simcausal:
 #                                           Simulating Longitudinal Data with Causal Inference Applications. R package version 0.5).
 #See the example here below:
-devtools::install_github('osofr/simcausal', build_vignettes = FALSE, force = TRUE, dependencies = TRUE)
+# devtools::install_github('osofr/simcausal', build_vignettes = FALSE, force = TRUE, dependencies = TRUE)
 
-library(simcausal)
 M <- DAG.empty()
 M <- M +
   node("W1", # age (0/1); 1 -> high age
@@ -299,8 +296,6 @@ plotDAG(Mset, xjitter = 0.3, yjitter = 0.04,edge_attrs = list(width = 0.5, arrow
 
 ### pay no attention beneath here!
 
-
-
 sl_libs <- c('SL.glmnet', 'SL.ranger', 'SL.nnet', 'SL.earth') # (penalized regression, random forests, and multivariate adaptive regression splines)
 
 Y <- ObsData$Y
@@ -356,9 +351,6 @@ print(ATE)
 print(ATT)
 print(ATC)
 
-
-
-}
 
 ################
 ################
@@ -427,10 +419,7 @@ glm(death ~ race, data = hospitalized_df, family = binomial()) %>%
 
 #######
 
-# Trying to get rcausal running
-
-
-library(rcausal)
+# Trying to get rcausal runnin
 dd <- tetradrunner(algoId = 'gfci', df = dat, dataType = 'discrete', scoreId = 'bdeu', 
                    #maxDegree=-1,
                    faithfulnessAssumed=TRUE, verbose = TRUE)
@@ -451,6 +440,49 @@ for(i in 0:as.integer(nodes$size()-1)){
   cat(node$getName(),": ",node$getAttribute('BIC'),"\n")
 }
 
+#####################
+# Tables and Plots 
 
 
+# Report a table with sample size and the results with different estimators.
+# This table should report the information about the simulation.
 
+# Forest plots with two simple scenarios 1 with all 4 variables and 1 without W4 and we estimate it.
+# Think love.plot for the results section.
+# love.plot()
+
+n = 20000
+#dat_obs <- generate_data(n, "onlyBadCovariates")
+dat_obs <- generate_data(n, "onlyConfounders")
+#dat_obs <- generate_data(n, "onlyConfoundersAndPrecisionVars")
+# dat_obs <- generate_data(n, "all")
+# dat_obs <- generate_data(n, "allPure")
+
+data_subset <- dat_obs %>% select(A, Y, W1, W2, W3, W4)
+
+# summarize the data with our package
+tbl_summary(data_subset,
+            by = A) %>%
+  modify_header(label = "**Variable**") %>% # update the column header
+  bold_labels()
+
+# summary_table(dat_obs)
+
+set.cobalt.options(binary = "std")
+
+w.All <- WeightIt::weightit(
+  A ~ W1 + W2 + W3 + W4,
+  data = dat_obs, estimand = "ATE", method = "ps")
+love.plot(w.All, 
+          var.order = "unadjusted",
+          colors = c("red", "blue"),
+          shapes = c("triangle filled", "circle filled"))
+
+
+w.WO4 <- WeightIt::weightit(
+  A ~ W1 + W2 + W3,
+  data = dat_obs, estimand = "ATE", method = "ps")
+love.plot(w.WO4, 
+          var.order = "unadjusted",
+          colors = c("red", "blue"),
+          shapes = c("triangle filled", "circle filled"))
